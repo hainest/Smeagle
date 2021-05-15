@@ -3,81 +3,41 @@
 //
 // SPDX-License-Identifier: (Apache-2.0 OR MIT)
 
-#include <fmt/format.h>
-#include <smeagle/smeagle.h>
-#include <smeagle/corpora.h>
-#include <regex>
-#include <iostream>
-#include <fmt/core.h>
+#include "smeagle/smeagle.hpp"
 
-#include "Function.h"
+#include <stdexcept>
+
 #include "Symtab.h"
+#include "detail/parser.hpp"
 
-using namespace Dyninst;
-using namespace SymtabAPI;
-using namespace smeagle;
+namespace smeagle {
 
-Smeagle::Smeagle(std::string _library) : library(std::move(_library)) {}
+  corpus parse(std::string file_name) {
+    namespace st = Dyninst::SymtabAPI;
 
-
-// Parse the library with smeagle
-int Smeagle::parse(FormatCode fmt) {
-
-  // We are going to read functions and symbols
-  Symtab *obj = NULL;
-  std::vector<Symbol *> symbols;
-  std::vector<Function *> funcs;
-
-  // Read the library into the Symtab object, cut out early if there's error
-  if (not Symtab::openFile(obj, library)) {
-    std::cout << "There was a problem reading " << library << "\n";
-    return 1;
-  }
-
-  // Get all functions in the library
-  if (not obj->getAllFunctions(funcs)) {
-    std::cout << "There was a problem getting functions from " << library << "\n";
-    return 1;
-  }
-
-  // Get all functions in the library
-  // Note: looping through this doesn't seem to work
-  if (not obj->getAllSymbols(symbols)) {
-    std::cout << "There was a problem getting symbols from " << library << "\n";
-    return 1;
-  }
-
-  // Create a corpus
-  Corpus corpus(library);
-  
-  // Loop through the vector and look at symbols
-  for (auto &symbol : symbols) {
-    // We are interested in symbols in the dynamic symbol table
-    if (symbol->isInDynSymtab()) {
-      // If It's a function, parse the parameters
-      if (symbol->isFunction()) {
-        corpus.parseFunctionABILocation(symbol);
-
-        // The symbol is something else (we likely want a subset of these?)
-      }  // else {
-         // std::cout << "symbol_notparsed(" <<  sname << ")" << "\n";
-      //}
+    // Read the library into the Symtab object
+    st::Symtab *obj{};
+    if (!st::Symtab::openFile(obj, file_name)) {
+      throw std::runtime_error{"Could not open file " + file_name};
     }
-  }
 
-  // Generate output (for now, all are asp).
-  switch (fmt) {
-    default:
-    case FormatCode::Json:
-      corpus.toJson();
-      break;
-    case FormatCode::Asp:
-      corpus.toAsp();
-      break;
-    case FormatCode::Yaml:
-      corpus.toYaml();
-      break;
-  }
+    // Get all symbols in the library
+    std::vector<st::Symbol *> symbols;
+    if (!obj->getAllSymbols(symbols)) {
+      throw std::runtime_error{"Could not read symbols from " + file_name};
+    }
 
-  return 0;
-}
+    /* clang-format off */
+    // We are only interested in exported (global) functions
+    symbols.erase(
+      std::remove_if(symbols.begin(), symbols.end(),
+        [](st::Symbol *s) {
+          return !s->isFunction() || s->getLinkage() != st::Symbol::SL_GLOBAL;
+        }
+      )
+    );
+    /* clang-format on */
+
+    return {parse_abi(symbols, obj->getArchitecture()), std::move(file_name)};
+  }
+}  // namespace smeagle
